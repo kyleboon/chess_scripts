@@ -36,29 +36,7 @@ def eval_absolute(number, white_to_move):
 
     return number if white_to_move else -number
 
-
-def winning_chances(centipawns):
-    """
-    Takes an evaluation in centipawns and returns an integer value estimating
-    the chance the player to move will win the game
-    winning chances = 50 + 50 * (2 / (1 + e^(-0.004 * centipawns)) - 1)
-    """
-    return 50 + 50 * (2 / (1 + math.exp(-0.004 * centipawns)) - 1)
-
-
-def needs_annotation(judgment):
-    """
-    Returns a boolean indicating whether a node with the given evaluations
-    should have an annotation added
-    """
-    best = winning_chances(int(judgment["besteval"]))
-    played = winning_chances(int(judgment["playedeval"]))
-    delta = best - played
-
-    return delta > NEEDS_ANNOTATION_THRESHOLD
-
-
-def judge_move(board, played_move, engine, searchtime_s):
+def judge_move(board, played_move, engine):
     """
     Evaluate the strength of a given move by comparing it to engine's best
     move and evaluation at a given depth, in a given board context
@@ -79,12 +57,9 @@ def judge_move(board, played_move, engine, searchtime_s):
           "nodes":         Number nodes searched
     """
 
-    # Calculate the search time in milliseconds
-    searchtime_ms = searchtime_s * 1000
-
     judgment = {}
 
-    info = engine.analyse(board, chess.engine.Limit(time=searchtime_ms))
+    info = engine.analyse(board, chess.engine.Limit(depth=22))
     judgment["bestmove"] = info["pv"][0]
     judgment["besteval"] = eval_numeric(info)
 
@@ -94,12 +69,12 @@ def judge_move(board, played_move, engine, searchtime_s):
     else:
         # get the engine evaluation of the played move
         board.push(played_move)
-        info = engine.analyse(board, chess.engine.Limit(time=searchtime_ms))
+        info = engine.analyse(board, chess.engine.Limit(depth=22))
 
         # Store the numeric evaluation.
         # We invert the sign since we're now evaluating from the opponent's
         # perspective
-        judgment["playedeval"] = -eval_numeric(info)
+        judgment["playedeval"] = eval_numeric(info)
 
         # Take the played move off the stack (reset the board)
         board.pop()
@@ -257,6 +232,7 @@ def classify_opening(game):
             ply_count += 1
             node = prev_node
 
+        node.root().headers["Moves"] = str(ply_count)
         return node.root(), root_node, ply_count
 
 
@@ -288,7 +264,7 @@ def add_acpl(game, root_node):
 
     return node.root()
 
-def analyze_game(game, arg_gametime, enginepath, threads):
+def analyze_game(game, engine):
     """
     Take a PGN game and return a GameNode with engine analysis added
     - Attempt to classify the opening with ECO and identify the root node
@@ -299,20 +275,9 @@ def analyze_game(game, arg_gametime, enginepath, threads):
     - Analyze the game, adding annotations where appropriate
     - Return the root node with annotations
     """
-
     # First, check the game for PGN parsing errors
     # This is done so that we don't waste CPU time on nonsense games
     checkgame(game)
-
-    ###########################################################################
-    # Initialize the engine
-    ###########################################################################
-    try:
-        engine = chess.engine.SimpleEngine.popen_uci(enginepath)
-    except FileNotFoundError:
-        raise
-    except PermissionError:
-        raise
 
     ###########################################################################
     # Clear existing comments and variations
@@ -327,10 +292,9 @@ def analyze_game(game, arg_gametime, enginepath, threads):
     node = game.end()
     while not node == root_node:
         prev_node = node.parent
-        judge_move(prev_node.board(), node.move, engine, 0.1)
+        node.comment = judge_move(prev_node.board(), node.move, engine)
         node = prev_node
 
-    engine.quit()
     return add_acpl(game, root_node)
 
 
@@ -350,34 +314,41 @@ def checkgame(game):
         raise RuntimeError(errormsg)
 
 def main():
+    try:
+        engine = chess.engine.SimpleEngine.popen_uci("stockfish")
+    except FileNotFoundError:
+        raise
+    except PermissionError:
+        raise
+
     user_name = 'kyle_b81'
 
-    # with open("all_games.pgn", "w") as output_file:
-    #     for month_index in range(12):
-    #         api = f"https://api.chess.com/pub/player/{user_name}/games/2021/{str(month_index + 1).zfill(2)}"
-    #         print(api)
-    #         results = requests.get(api).json()
-    #
-    #         for next_game in results['games']:
-    #             if next_game['time_class'] == 'rapid':
-    #                 output_file.write(next_game['pgn'])
-    #                 output_file.write("\n\n")
+    with open("january2022.pgn", "w") as output_file:
+        for month_index in range(1):
+            api = f"https://api.chess.com/pub/player/{user_name}/games/2022/{str(month_index + 1).zfill(2)}"
+            print(api)
+            results = requests.get(api).json()
 
-    pgn = open("all_games.pgn", encoding="utf-8")
+            for next_game in results['games']:
+                if next_game['time_class'] == 'rapid':
+                    output_file.write(next_game['pgn'])
+                    output_file.write("\n\n")
 
-    count = 0
+    pgn = open("january2022.pgn", encoding="utf-8")
 
-    # Read the first game
     game = chess.pgn.read_game(pgn)
-    #while game is not None:
-    analyzed_game = analyze_game(game, 0.1, "stockfish", 2)
-    # Read the next game
-    #game = chess.pgn.read_game(pgn)
+    while game:
+        if (game.root().headers["Termination"].startswith("kyle_b81 won")):
+            analyzed_game = analyze_game(game, engine)
+            if (analyzed_game.root().headers["White"] == user_name):
+                acpl = analyzed_game.root().headers["WhiteACPL"]
+            else:
+                acpl = analyzed_game.root().headers["BlackACPL"]
 
-    if (analyzed_game.root().headers["White"] == user_name):
-        print(analyzed_game.root().headers["WhiteACPL"])
-    else:
-        print(analyzed_game.root().headers["BlackACPL"])
+            print(acpl+"\t"+analyzed_game.root().headers["Link"])
+        game = chess.pgn.read_game(pgn)
+
+    engine.quit()
 
 if __name__ == "__main__":
     main()
